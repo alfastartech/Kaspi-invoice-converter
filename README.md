@@ -1,4 +1,6 @@
+Current version 2.3/Актуальная версия 2.3
 
+English:
 Library imports:
 
 import os
@@ -47,6 +49,7 @@ Button for selecting an archive.
 Labels for displaying results at the bottom of the window and showing progress.
 Watermark "𝒜𝓁𝒻𝒶" - author's pseudonym.
 
+Русский:
 Импорты библиотек:
 
 import os
