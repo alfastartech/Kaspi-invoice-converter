@@ -1,4 +1,4 @@
-Current version 2.3/Актуальная версия 2.3
+Current version 3.1/Актуальная версия 3.1
 
 English:
 Library imports:
