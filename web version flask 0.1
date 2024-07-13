@@ -1,0 +1,194 @@
+import os
+import zipfile
+from io import BytesIO
+from flask import Flask, render_template_string, request, redirect, url_for, flash
+from pdf2image import convert_from_bytes
+from PIL import Image
+from datetime import datetime
+import shutil
+
+app = Flask(__name__)
+app.secret_key = 'your_secret_key'
+
+# HTML-шаблоны прямо в коде Python
+index_html = """
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF to JPG Converter</title>
+</head>
+<body>
+    <h1>PDF to JPG Converter for PDF Archives</h1>
+    {% with messages = get_flashed_messages() %}
+        {% if messages %}
+            <ul>
+                {% for message in messages %}
+                    <li>{{ message }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+    {% endwith %}
+    <form action="/" method="post" enctype="multipart/form-data">
+        <label for="archive">Выберите архив с PDF-файлами:</label>
+        <input type="file" id="archive" name="archive" accept=".zip" required><br><br>
+        <label for="grid_cols">Столбцы (от 3 до 6):</label>
+        <input type="number" id="grid_cols" name="grid_cols" min="3" max="6" value="3" required><br><br>
+        <label for="grid_rows">Строки (от 3 до 6):</label>
+        <input type="number" id="grid_rows" name="grid_rows" min="3" max="6" value="3" required><br><br>
+        <button type="submit">Загрузить и конвертировать</button>
+    </form>
+</body>
+</html>
+"""
+
+success_html = """
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Conversion Success</title>
+</head>
+<body>
+    <h1>Преобразование завершено успешно</h1>
+    <a href="/">Вернуться на главную страницу</a>
+</body>
+</html>
+"""
+
+error_html = """
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Error</title>
+</head>
+<body>
+    <h1>Произошла ошибка</h1>
+    <p>{{ error_message }}</p>
+    <a href="/">Вернуться на главную страницу</a>
+</body>
+</html>
+"""
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        grid_cols = int(request.form['grid_cols'])
+        grid_rows = int(request.form['grid_rows'])
+
+        archive_file = request.files['archive']
+        if archive_file.filename == '':
+            flash('Файл архива не выбран', 'error')
+            return redirect(url_for('index'))
+
+        archive_data = BytesIO(archive_file.read())
+        temp_dir = os.path.join(app.instance_path, 'temp')
+        os.makedirs(temp_dir, exist_ok=True)
+
+        with zipfile.ZipFile(archive_data, 'r') as zip_file:
+            for file_info in zip_file.infolist():
+                if file_info.filename.lower().endswith('.pdf'):
+                    zip_file.extract(file_info, temp_dir)
+
+        output_folder = os.path.join(app.instance_path, 'output')
+        process_pdf_archive(temp_dir, output_folder, grid_cols, grid_rows)
+        shutil.rmtree(temp_dir)
+
+        flash('Преобразование завершено успешно', 'success')
+        return redirect(url_for('success'))
+
+    return render_template_string(index_html)
+
+@app.route('/success')
+def success():
+    return success_html
+
+@app.route('/error/<error_message>')
+def error(error_message):
+    return render_template_string(error_html, error_message=error_message)
+
+def crop_and_save(image, output_folder, pdf_filename, page_number):
+    width, height = image.size
+    left, top, right, bottom = 0, 0, width * 0.5, height * 0.5
+    cropped_image = image.crop((left, top, right, bottom))
+
+    os.makedirs(output_folder, exist_ok=True)
+    output_folder_cache = os.path.join(output_folder, "cache")
+    os.makedirs(output_folder_cache, exist_ok=True)
+
+    image_path = os.path.join(output_folder_cache, f"{pdf_filename}_page_{page_number}.jpg")
+    cropped_image.save(image_path, "JPEG")
+    return image_path
+
+def convert_pdf_to_jpg(pdf_data, output_folder, pdf_filename, grid_cols, grid_rows):
+    images = convert_from_bytes(pdf_data)
+
+    os.makedirs(output_folder, exist_ok=True)
+
+    total_pages = len(images)
+
+    for i, image in enumerate(images, start=1):
+        image_path = crop_and_save(image, output_folder, pdf_filename, i)
+
+    return total_pages
+
+def merge_images(output_folder, grid_cols, grid_rows):
+    cache_folder = os.path.join(output_folder, "cache")
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    final_folder = os.path.join(output_folder, f"final_{timestamp}")
+    os.makedirs(final_folder, exist_ok=True)
+
+    files = os.listdir(cache_folder)
+    images = [f for f in files if f.lower().endswith((".jpg", ".png", ".bmp"))]
+
+    if not images:
+        return
+
+    images.sort()
+    images_per_grid = grid_cols * grid_rows
+
+    for idx in range(0, len(images), images_per_grid):
+        grid_images = images[idx:idx + images_per_grid]
+
+        merged_width = 827 * grid_cols
+        merged_height = 1170 * grid_rows
+
+        merged_image = Image.new("RGB", (merged_width, merged_height), (255, 255, 255))
+
+        for i, img_name in enumerate(grid_images):
+            col = i % grid_cols
+            row = i // grid_cols
+            x_offset = col * 827
+            y_offset = row * 1170
+
+            img_path = os.path.join(cache_folder, img_name)
+            img = Image.open(img_path)
+            img = img.resize((827, 1170))
+            merged_image.paste(img, (x_offset, y_offset))
+
+        merged_image.save(os.path.join(final_folder, f"merged_result_{idx // images_per_grid + 1}.jpg"))
+
+    shutil.rmtree(cache_folder)
+
+
+def process_pdf_archive(input_folder, output_folder, grid_cols, grid_rows):
+    for root, dirs, files in os.walk(input_folder):
+        for file_name in files:
+            if file_name.lower().endswith(".pdf"):
+                pdf_path = os.path.join(root, file_name)
+                with open(pdf_path, 'rb') as f:
+                    pdf_data = f.read()
+                    pdf_filename = os.path.splitext(file_name)[0]
+                    convert_pdf_to_jpg(pdf_data, output_folder, pdf_filename, grid_cols, grid_rows)
+
+    merge_images(output_folder, grid_cols, grid_rows)
+
+if __name__ == '__main__':
+    app.run(debug=True)
